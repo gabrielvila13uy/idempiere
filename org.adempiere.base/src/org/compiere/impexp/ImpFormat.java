@@ -667,4 +667,147 @@ public final class ImpFormat
 		return true;
 	}	//	updateDB
 
+	/**
+	 * Customización de este método para que retorne el ID del registro creado en vez de un booleano.
+	 * Tanane. Created by Gabriel Vila on 2021-05-21.
+	 * @param ctx
+	 * @param line
+	 * @param trxName
+	 * @return
+	 */
+	public int updateDBint (Properties ctx, String line, String trxName)
+	{
+		if (line == null || line.trim().length() == 0)
+		{
+			log.finest("No Line");
+			return -1;
+		}
+		String[] nodes = parseLine (line, true, false, true);	//	with label, no trace, ignore empty
+		if (nodes.length == 0)
+		{
+			if (log.isLoggable(Level.FINEST)) log.finest("Nothing parsed from: " + line);
+			return -1;
+		}
+	//	log.config( "ImpFormat.updateDB - listSize=" + nodes.length);
+
+		//  Standard Fields
+		int AD_Client_ID = Env.getAD_Client_ID(ctx);
+		int AD_Org_ID = Env.getAD_Org_ID(ctx);
+		if (getAD_Table_ID() == X_I_GLJournal.Table_ID)
+			AD_Org_ID = 0;
+		int UpdatedBy = Env.getAD_User_ID(ctx);
+
+
+		//	Check if the record is already there ------------------------------
+		StringBuilder sql = new StringBuilder ("SELECT COUNT(*), MAX(")
+			.append(m_tablePK).append(") FROM ").append(m_tableName)
+			.append(" WHERE AD_Client_ID=").append(AD_Client_ID).append(" AND (");
+		//
+		String where1 = null;
+		String where2 = null;
+		String whereParentChild = null;
+		for (int i = 0; i < nodes.length; i++)
+		{
+			if (nodes[i].endsWith("=''") || nodes[i].endsWith("=0"))
+				;
+			else if (nodes[i].startsWith(m_tableUnique1 + "="))
+				where1 = nodes[i];
+			else if (nodes[i].startsWith(m_tableUnique2 + "="))
+				where2 = nodes[i];
+			else if (nodes[i].startsWith(m_tableUniqueParent + "=") || nodes[i].startsWith(m_tableUniqueChild + "="))
+			{
+				if (whereParentChild == null)
+					whereParentChild = nodes[i];
+				else
+					whereParentChild += " AND " + nodes[i];
+			}
+		}
+		StringBuilder find = new StringBuilder();
+		if (where1 != null)
+			find.append(where1);
+		if (where2 != null)
+		{
+			if (find.length() > 0)
+				find.append(" OR ");
+			find.append(where2);
+		}
+		if (whereParentChild != null && whereParentChild.indexOf(" AND ") != -1)	//	need to have both criteria
+		{
+			if (find.length() > 0)
+				find.append(" OR (").append(whereParentChild).append(")");	//	may have only one
+			else
+				find.append(whereParentChild);
+		}
+		sql.append(find).append(")");
+		int count = 0;
+		int ID = 0;
+		if (find.length() > 0)
+		{
+			PreparedStatement pstmt = null;
+			ResultSet rs = null;
+			try
+			{
+				pstmt = DB.prepareStatement(sql.toString(), trxName);
+				rs = pstmt.executeQuery();
+				if (rs.next())
+				{
+					count = rs.getInt(1);
+					if (count == 1)
+						ID = rs.getInt(2);
+				}
+			}
+			catch (SQLException e)
+			{
+				log.log(Level.SEVERE, sql.toString(), e);
+				return -1;
+			}
+			finally
+			{
+				DB.close(rs, pstmt);
+				rs = null;
+				pstmt = null;
+			}
+		}
+
+		//	Insert Basic Record -----------------------------------------------
+		if (ID == 0)
+		{
+			ID = DB.getNextID(ctx, m_tableName, null);		//	get ID
+			sql = new StringBuilder("INSERT INTO ")
+				.append(m_tableName).append("(").append(m_tablePK).append(",")
+				.append("AD_Client_ID,AD_Org_ID,Created,CreatedBy,Updated,UpdatedBy,IsActive")	//	StdFields
+				.append(") VALUES (").append(ID).append(",")
+				.append(AD_Client_ID).append(",").append(AD_Org_ID)
+				.append(",getDate(),").append(UpdatedBy).append(",getDate(),").append(UpdatedBy).append(",'Y'")
+				.append(")");
+			//
+			int no = DB.executeUpdate(sql.toString(), trxName);
+			if (no != 1)
+			{
+				log.log(Level.SEVERE, "Insert records=" + no + "; SQL=" + sql.toString());
+				return -1;
+			}
+			if (log.isLoggable(Level.FINER)) log.finer("New ID=" + ID + " " + find);
+		}
+		else {
+			log.warning("Not Inserted, Old ID=" + ID + " " + find);
+			return -1;
+		}
+
+		//	Update Info -------------------------------------------------------
+		sql = new StringBuilder ("UPDATE ")
+			.append(m_tableName).append(" SET ");
+		for (int i = 0; i < nodes.length; i++)
+			sql.append(nodes[i]).append(",");		//	column=value
+		sql.append("IsActive='Y',Processed='N',I_IsImported='N',Updated=getDate(),UpdatedBy=").append(UpdatedBy);
+		sql.append(" WHERE ").append(m_tablePK).append("=").append(ID);
+		//  Update Cmd
+		int no = DB.executeUpdate(sql.toString(), trxName);
+		if (no != 1)
+		{
+			log.log(Level.SEVERE, m_tablePK + "=" + ID + " - rows updated=" + no);
+			return -1;
+		}
+		return ID;
+	}	//	updateDB	
 }	//	ImpFormat
